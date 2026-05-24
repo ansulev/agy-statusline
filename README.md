@@ -45,7 +45,7 @@ When loaded, your `agy` bottom status bar will look like this:
 Clone this repository and run the automated installer:
 
 ```bash
-git clone https://github.com/yourusername/agy-statusline.git
+git clone https://github.com/ansulev/agy-statusline.git
 cd agy-statusline
 chmod +x setup.sh
 ./setup.sh
@@ -74,7 +74,7 @@ If you prefer to configure it manually:
    {
      "statusLine": {
        "type": "command",
-       "command": "/home/angel/.gemini/antigravity-cli/scratch/agy-statusline"
+       "command": "~/.gemini/antigravity-cli/scratch/agy-statusline"
      }
    }
    ```
