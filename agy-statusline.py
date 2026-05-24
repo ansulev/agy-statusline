@@ -16,15 +16,15 @@ PRICING = {
     "pro": {"input": 1.25 / 1_000_000, "output": 5.00 / 1_000_000}
 }
 
-# Configurable Token Capacity Caps (default matches ~100k tokens per 5h for free/sub caps)
+# Configurable Token Capacity Caps (160k cap matches exactly 60% used/40% remaining for 97k tokens)
 CAPS = {
     "flash": {
-        "5h": 100_000,      # 100k tokens per 5 hours
-        "7d": 1_000_000     # 1M tokens per 7 days
+        "5h": 160_000,      # 160k tokens per 5 hours
+        "7d": 1_600_000     # 1.6M tokens per 7 days
     },
     "pro": {
-        "5h": 100_000,      # 100k tokens per 5 hours
-        "7d": 1_000_000     # 1M tokens per 7 days
+        "5h": 160_000,      # 160k tokens per 5 hours
+        "7d": 1_600_000     # 1.6M tokens per 7 days
     }
 }
 
