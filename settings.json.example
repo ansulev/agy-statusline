@@ -1,6 +1,6 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "/home/angel/.gemini/antigravity-cli/scratch/agy-statusline"
+    "command": "~/.gemini/antigravity-cli/scratch/agy-statusline"
   }
 }

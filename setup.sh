@@ -41,7 +41,7 @@ with open('$SETTINGS_FILE', 'r') as f:
     data = json.load(f)
 data['statusLine'] = {
     'type': 'command',
-    'command': '$SCRATCH_DIR/agy-statusline'
+    'command': '~/.gemini/antigravity-cli/scratch/agy-statusline'
 }
 with open('$SETTINGS_FILE', 'w') as f:
     json.dump(data, f, indent=2)
@@ -53,7 +53,7 @@ else
 {
   "statusLine": {
     "type": "command",
-    "command": "$SCRATCH_DIR/agy-statusline"
+    "command": "~/.gemini/antigravity-cli/scratch/agy-statusline"
   }
 }
 EOF

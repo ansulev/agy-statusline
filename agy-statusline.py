@@ -16,6 +16,18 @@ PRICING = {
     "pro": {"input": 1.25 / 1_000_000, "output": 5.00 / 1_000_000}
 }
 
+# Configurable Token Capacity Caps (default matches ~100k tokens per 5h for free/sub caps)
+CAPS = {
+    "flash": {
+        "5h": 100_000,      # 100k tokens per 5 hours
+        "7d": 1_000_000     # 1M tokens per 7 days
+    },
+    "pro": {
+        "5h": 100_000,      # 100k tokens per 5 hours
+        "7d": 1_000_000     # 1M tokens per 7 days
+    }
+}
+
 def estimate_tokens(text):
     if not text:
         return 0
@@ -32,7 +44,6 @@ def main():
     model_info = input_data.get("model") or {}
     model_id = (model_info.get("id") or "gemini-3.5-flash").lower()
     
-    # Map model tier
     tier = "pro" if "pro" in model_id or "opus" in model_id or "sonnet" in model_id else "flash"
     rates = PRICING[tier]
     
@@ -49,6 +60,10 @@ def main():
 
     session_input_tokens = 0
     session_output_tokens = 0
+    
+    five_hour_tokens = 0
+    seven_day_tokens = 0
+    
     five_hour_cost = 0.0
     seven_day_cost = 0.0
     today_cost = 0.0
@@ -85,6 +100,8 @@ def main():
                             thinking = step.get("thinking", "")
                             output_tok = estimate_tokens(content) + estimate_tokens(thinking)
                         
+                        total_tok = input_tok + output_tok
+                        
                         if is_current_session:
                             session_input_tokens += input_tok
                             session_output_tokens += output_tok
@@ -93,8 +110,10 @@ def main():
                         
                         if created_time >= five_hours_ago:
                             five_hour_cost += step_cost
+                            five_hour_tokens += total_tok
                         if created_time >= seven_days_ago:
                             seven_day_cost += step_cost
+                            seven_day_tokens += total_tok
                         if created_time >= today_start:
                             today_cost += step_cost
                     except Exception:
@@ -115,8 +134,10 @@ def main():
     today_budget = monthly_budget / 30.0
     
     today_pct = min(999, int((today_cost / today_budget) * 100)) if today_budget > 0 else 0
-    five_hour_pct = min(999, int((five_hour_cost / (monthly_budget / 6.0)) * 100))
-    seven_day_pct = min(999, int((seven_day_cost / (monthly_budget * 7 / 30)) * 100))
+    
+    # Calculate utilization against configurable capacity caps instead of monthly budget fractions
+    five_hour_pct = min(100, int((five_hour_tokens / CAPS[tier]["5h"]) * 100))
+    seven_day_pct = min(100, int((seven_day_tokens / CAPS[tier]["7d"]) * 100))
 
     context_limit = 2_000_000
     context_pct = min(100, int((session_tokens / context_limit) * 100))

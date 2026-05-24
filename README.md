@@ -51,7 +51,7 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The installer will copy the files into your `~/.gemini/antigravity-cli/scratch` directory, set the correct permissions, and automatically configure your `settings.json`.
+The installer will copy the files into your `~/.gemini/antigravity-cli/scratch` directory, set the correct permissions, and automatically configure your `settings.json` with the resolved path of your home directory.
 
 ---
 
@@ -69,7 +69,7 @@ If you prefer to configure it manually:
    ```bash
    chmod +x ~/.gemini/antigravity-cli/scratch/agy-statusline
    ```
-4. Point to the wrapper script in your `~/.gemini/antigravity-cli/settings.json`:
+4. Point to the wrapper script in your `~/.gemini/antigravity-cli/settings.json` using the tilde (`~`) shell expansion prefix:
    ```json
    {
      "statusLine": {
