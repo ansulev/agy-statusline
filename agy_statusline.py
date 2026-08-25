@@ -58,7 +58,8 @@ def estimate_tokens(text):
 def main():
     try:
         input_data = json.load(sys.stdin)
-    except Exception:
+    except Exception as e:
+        print(f"Statusline Error parsing stdin: {e}", file=sys.stderr)
         input_data = {}
 
     session_id = input_data.get("session_id", "")
@@ -191,129 +192,165 @@ def main():
 
     # Expand ~ safely
     home_dir = os.path.expanduser("~")
-    brain_pattern = os.path.join(home_dir, ".gemini/antigravity-cli/brain/*/.system_generated/logs/transcript.jsonl")
-    cache_path = os.path.join(home_dir, ".gemini/antigravity-cli/scratch/statusline_cache.json")
+    brain_dir = os.path.join(home_dir, ".gemini/antigravity-cli/brain")
+    state_dir = os.path.join(home_dir, ".gemini/antigravity-cli/state")
+    os.makedirs(state_dir, exist_ok=True)
+    db_path = os.path.join(state_dir, "usage.db")
     
-    # Caching helper functions
-    def load_cache(path):
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {}
-
-    def save_cache(path, data):
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-        except Exception:
-            pass
-
-    cache = load_cache(cache_path)
-    new_cache = {}
-    cache_updated = False
-
-    for file_path in glob.glob(brain_pattern):
-        try:
-            mtime = os.path.getmtime(file_path)
-        except Exception:
-            continue
-            
-        is_current_session = bool(session_id) and (session_id in file_path)
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         
-        # Load from cache if valid
-        cached_entry = cache.get(file_path)
-        if isinstance(cached_entry, dict) and cached_entry.get("mtime") == mtime:
-            steps = cached_entry.get("steps", [])
-            session_tokens_val = cached_entry.get("session_tokens", 0)
-            new_cache[file_path] = cached_entry
-        else:
-            # Parse disk file
-            steps = []
-            history_tokens = 0
-            file_rates = get_rates_for_model("flash", PRICING)
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            step = json.loads(line)
-                            if not isinstance(step, dict):
-                                continue
-                            content = step.get("content", "")
-                            if "<USER_SETTINGS_CHANGE>" in content and "Model Selection" in content:
-                                match = re.search(r"Model Selection.*?to\s+([^\n]+)", content)
-                                if match:
-                                    m_name = match.group(1).lower()
-                                    file_rates = get_rates_for_model(m_name, PRICING)
+        # Schema setup
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                file_path TEXT PRIMARY KEY,
+                mtime REAL,
+                session_tokens INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS steps (
+                file_path TEXT,
+                t REAL,
+                k INTEGER,
+                c REAL,
+                is_resp INTEGER
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_t ON steps(t)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_steps_file_path ON steps(file_path)")
+        
+        # Get cached mtimes
+        c = conn.cursor()
+        c.execute("SELECT file_path, mtime, session_tokens FROM files")
+        cache = {row[0]: {"mtime": row[1], "session_tokens": row[2]} for row in c.fetchall()}
+        
+        # Scan for files efficiently using os.scandir
+        active_files = set()
+        if os.path.exists(brain_dir):
+            for entry in os.scandir(brain_dir):
+                if entry.is_dir():
+                    file_path = os.path.join(entry.path, ".system_generated/logs/transcript.jsonl")
+                    try:
+                        mtime = os.path.getmtime(file_path)
+                    except Exception:
+                        continue
+                    
+                    active_files.add(file_path)
+                    
+                    is_current_session = bool(session_id) and (session_id in file_path)
+                    cached_entry = cache.get(file_path)
+                    
+                    if cached_entry and cached_entry["mtime"] == mtime:
+                        if is_current_session:
+                            session_tokens = cached_entry["session_tokens"]
+                        continue
+                    
+                    # File changed or new, parse it
+                    steps = []
+                    history_tokens = 0
+                    file_rates = get_rates_for_model("flash", PRICING)
+                    try:
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                try:
+                                    step = json.loads(line)
+                                    if not isinstance(step, dict):
+                                        continue
+                                    content = step.get("content", "")
+                                    if "<USER_SETTINGS_CHANGE>" in content and "Model Selection" in content:
+                                        match = re.search(r"Model Selection.*?to\s+([^\n]+)", content)
+                                        if match:
+                                            m_name = match.group(1).lower()
+                                            file_rates = get_rates_for_model(m_name, PRICING)
+                                                
+                                    created_str = step.get("created_at")
+                                    if not created_str:
+                                        continue
+                                    created_str = created_str.replace("Z", "+00:00")
+                                    created_time = datetime.fromisoformat(created_str)
+                                    step_type = step.get("type", "")
+                                    thinking = step.get("thinking", "")
+                                    
+                                    step_tok = estimate_tokens(content) + estimate_tokens(thinking)
+                                    
+                                    step_cost = 0.0
+                                    if step_type == "PLANNER_RESPONSE":
+                                        input_tok = history_tokens
+                                        output_tok = step_tok
+                                        step_cost = (input_tok * file_rates["input"]) + (output_tok * file_rates["output"])
+                                        history_tokens += output_tok
+                                    else:
+                                        history_tokens += step_tok
                                         
-                            created_str = step.get("created_at")
-                            if not created_str:
-                                continue
-                            created_str = created_str.replace("Z", "+00:00")
-                            created_time = datetime.fromisoformat(created_str)
-                            step_type = step.get("type", "")
-                            thinking = step.get("thinking", "")
-                            
-                            step_tok = estimate_tokens(content) + estimate_tokens(thinking)
-                            
-                            step_cost = 0.0
-                            if step_type == "PLANNER_RESPONSE":
-                                input_tok = history_tokens
-                                output_tok = step_tok
-                                step_cost = (input_tok * file_rates["input"]) + (output_tok * file_rates["output"])
-                                history_tokens += output_tok
-                            else:
-                                history_tokens += step_tok
-                                
-                            steps.append({
-                                "t": created_time.timestamp(),
-                                "k": step_tok,
-                                "c": step_cost,
-                                "is_resp": step_type == "PLANNER_RESPONSE"
-                            })
-                        except Exception:
-                            continue
-                
-                session_tokens_val = history_tokens
-                new_cache[file_path] = {
-                    "mtime": mtime,
-                    "steps": steps,
-                    "session_tokens": session_tokens_val
-                }
-                cache_updated = True
-            except Exception:
-                continue
+                                    # Only save steps from the last 7 days to keep DB small
+                                    if created_time >= seven_days_ago:
+                                        steps.append((file_path, created_time.timestamp(), step_tok, step_cost, 1 if step_type == "PLANNER_RESPONSE" else 0))
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+                    
+                    # Update DB
+                    conn.execute("DELETE FROM steps WHERE file_path = ?", (file_path,))
+                    if steps:
+                        conn.executemany("INSERT INTO steps (file_path, t, k, c, is_resp) VALUES (?, ?, ?, ?, ?)", steps)
+                    conn.execute("INSERT OR REPLACE INTO files (file_path, mtime, session_tokens) VALUES (?, ?, ?)", (file_path, mtime, history_tokens))
+                    
+                    if is_current_session:
+                        session_tokens = history_tokens
 
-        # Aggregate metrics from steps
-        for step in steps:
-            step_time = datetime.fromtimestamp(step["t"], timezone.utc)
-            step_tok = step["k"]
-            step_cost = step["c"]
+        # Cleanup deleted files
+        deleted_files = set(cache.keys()) - active_files
+        for df in deleted_files:
+            conn.execute("DELETE FROM steps WHERE file_path = ?", (df,))
+            conn.execute("DELETE FROM files WHERE file_path = ?", (df,))
             
-            if step_time >= five_hours_ago:
-                five_hour_tokens += step_tok
-                if step["is_resp"]:
-                    five_hour_cost += step_cost
-            if step_time >= seven_days_ago:
-                seven_day_tokens += step_tok
-                if step["is_resp"]:
-                    seven_day_cost += step_cost
-            if step_time >= today_start_local:
-                today_tokens += step_tok
-                if step["is_resp"]:
-                    today_cost += step_cost
-            if is_current_session and step["is_resp"]:
-                session_cost += step_cost
+        # Optional: cleanup old steps globally
+        conn.execute("DELETE FROM steps WHERE t < ?", (seven_days_ago.timestamp(),))
+        
+        conn.commit()
 
-        if is_current_session:
-            session_tokens = session_tokens_val
+        # Query metrics directly from SQLite
+        c.execute("""
+            SELECT 
+                SUM(CASE WHEN t >= ? THEN k ELSE 0 END) as five_hour_tokens,
+                SUM(CASE WHEN t >= ? AND is_resp = 1 THEN c ELSE 0 END) as five_hour_cost,
+                SUM(CASE WHEN t >= ? THEN k ELSE 0 END) as seven_day_tokens,
+                SUM(CASE WHEN t >= ? AND is_resp = 1 THEN c ELSE 0 END) as seven_day_cost,
+                SUM(CASE WHEN t >= ? THEN k ELSE 0 END) as today_tokens,
+                SUM(CASE WHEN t >= ? AND is_resp = 1 THEN c ELSE 0 END) as today_cost
+            FROM steps
+        """, (
+            five_hours_ago.timestamp(), five_hours_ago.timestamp(),
+            seven_days_ago.timestamp(), seven_days_ago.timestamp(),
+            today_start_local.timestamp(), today_start_local.timestamp()
+        ))
+        row = c.fetchone()
+        if row:
+            five_hour_tokens = row[0] or 0
+            five_hour_cost = row[1] or 0.0
+            seven_day_tokens = row[2] or 0
+            seven_day_cost = row[3] or 0.0
+            today_tokens = row[4] or 0
+            today_cost = row[5] or 0.0
+            
+        # Get current session cost from DB
+        if session_id:
+            c.execute("SELECT SUM(c) FROM steps WHERE file_path LIKE ? AND is_resp = 1", (f"%{session_id}%",))
+            res = c.fetchone()
+            session_cost = res[0] or 0.0
 
-    # Save cache if anything was added/updated, or if a deleted file was pruned
-    if cache_updated or len(new_cache) != len(cache):
-        save_cache(cache_path, new_cache)
+    except Exception as e:
+        print(f"Statusline Error: {e}", file=sys.stderr)
+        # Fallback to zero values
+        pass
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
     def fmt_tok(t):
         if t >= 1000:
